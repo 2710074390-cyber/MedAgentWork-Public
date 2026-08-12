@@ -95,6 +95,14 @@ python tools/validate_options.py --help
 - `tools/goldenset/` 脚本默认数据目录为 `GoldenSet/`（需自行准备），路径已相对化到项目根
 - 跨工作区同步类工具（`sync_tools.py`、`maintenance.py`）的路径基于 `Path.home()/Desktop`，可按需修改
 
+## 致谢
+
+系统 5 个 Agent 的运行依赖以下大模型服务，感谢三家模型提供方：
+
+- **深度求索（DeepSeek）** — [deepseek.com](https://www.deepseek.com)
+- **智谱 AI（GLM）** — [zhipuai.cn](https://www.zhipuai.cn)
+- **通义千问（Qwen · 阿里云）** — [tongyi.aliyun.com](https://tongyi.aliyun.com)
+
 ## 许可
 
 MIT License，详见 [LICENSE](LICENSE)。
