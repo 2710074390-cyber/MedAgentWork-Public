@@ -24,6 +24,10 @@ sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 BASE = Path(__file__).parent
 STATE_FILE = BASE / "workflow_state.json"
 
+# 正式重构 (2026-08-13): 状态读写统一走 workflow_state.py（与本文件同目录）
+sys.path.insert(0, str(BASE))
+import workflow_state as ws
+
 STAGE_ORDER = ['agent2', 'agent3', 'agent4', 'agent5']
 STAGE_NAMES = {
     'agent2': 'Agent 2 (MedGen) 出题',
@@ -81,29 +85,16 @@ def detect_format(text):
 
 
 def detect_stage(state, batch_id):
-    """从 workflow_state.json 推断下一个未完成阶段"""
-    if batch_id not in state:
-        return 'agent2'
-    batch = state[batch_id]
-    steps = batch.get('steps', {})
-    for stage in STAGE_ORDER:
-        stage_key = stage.upper()
-        if stage_key not in steps:
-            return stage
-        if steps[stage_key].get('status') != 'COMPLETED':
-            return stage
-    return None
+    """从 workflow_state.json 推断下一个未完成阶段（统一模块）"""
+    return ws.detect_next_stage(state, batch_id, stages=STAGE_ORDER)
 
 
 def check_prereq(batch_id, stage):
     """管线强制校验：前置阶段产出是否存在"""
     if stage == 'agent2':
         # agent2 只需要批次已创建
-        state = {}
-        if STATE_FILE.exists():
-            with open(STATE_FILE, 'r', encoding='utf-8') as f:
-                state = json.load(f)
-        if batch_id not in state:
+        state, _ = ws.load_state()
+        if batch_id not in (state or {}):
             return False, f'批次 {batch_id} 尚未创建。请先在 Agent 1 说「开始新批次」'
         return True, None
 
@@ -128,8 +119,8 @@ def check_prereq(batch_id, stage):
 
     return False, (
         f'管线阻断：{prereq["desc"]} 不存在。'
-        f'请先完成 {STAGE_NAMES.get(prereq["stage"], prereq["stage"])} 阶段，'
-        f'复制其产出后运行 python save.py'
+        f'请先完成 {STAGE_NAMES.get(prereq["stage"], prereq["stage"])} 阶段'
+        f'（DSH 流程：编排者完成后自动继续；手动流程：先保存该阶段产出再运行 python save.py）'
     )
 
 
@@ -156,11 +147,10 @@ def main():
                         help='运行 validate_options.py 预检')
     args = parser.parse_args()
 
-    # ── 1. 加载状态 ──
-    state = {}
-    if STATE_FILE.exists():
-        with open(STATE_FILE, 'r', encoding='utf-8') as f:
-            state = json.load(f)
+    # ── 1. 加载状态（统一模块，含旧数据迁移）──
+    state, _err = ws.load_state()
+    if state is None:
+        state = {}
 
     # ── 2. 确定批次 ──
     batch_id = args.batch or state.get('active_batch')
@@ -179,7 +169,7 @@ def main():
 
     if stage is None:
         print(f'\n  ✅ 批次 {batch_id} 全部阶段已完成！')
-        print(f'  在 Agent 1 窗口输入「终审」进入归档流程。')
+        print(f'  在 DSH 主会话输入「终审」进入归档/签收流程。')
         sys.exit(0)
 
     # ── 4. 管线强制校验 ⛔ ──
@@ -355,14 +345,20 @@ def main():
 {'═'*50}
   ✅ {stage} 完成 → 👉 {next_stage}
 
-  在 Agent 1 窗口输入「继续」获取调用指令
+  在 DSH 主会话输入「继续」获取下一阶段调用指令（手动流程备选：粘贴到对应 Agent 窗口）
 {'═'*50}
 ''')
 
-    # ── 11. 更新状态 ──
+    # ── 11. 更新状态（统一模块）──
+    # v1.2 (2026-08-13): ingest 作为子进程已更新过 workflow_state.json
+    # （血缘/steps/md5）。必须重新加载磁盘上的最新 state 再写，
+    # 否则会用旧副本覆写、丢失 ingest 刚写入的血缘记录（lost-update）。
+    state, _ = ws.load_state()
+    if state is None:
+        state = {}
+        print(f'  ⚠️ 重新加载 state 失败，保留内存副本')
     state['active_batch'] = batch_id
-    with open(STATE_FILE, 'w', encoding='utf-8') as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
+    ws.save_state(state)
 
 
 if __name__ == '__main__':

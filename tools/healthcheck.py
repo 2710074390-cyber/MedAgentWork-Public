@@ -11,7 +11,7 @@ MedAgentWork 工程健康检查 v1.0
   python healthcheck.py --json       # JSON 输出（适合 CI/cron）
   python healthcheck.py --fix        # 自动修复可修复的问题
 
-检查维度（7 层）:
+检查维度（9 层）:
   A. 脚本存活性 — 所有 .py 文件可导入
   B. 文件完整性 — workflow_state 引用的文件存在，JSON 可解析
   C. 状态一致性 — 批次记录无断裂，无重复文件
@@ -19,8 +19,10 @@ MedAgentWork 工程健康检查 v1.0
   E. Prompt 同步 — clean/ 版本与 current 一致
   F. GoldenSet  — 金标准可用（--full 模式含回归）
   G. 知识库     — RAG 索引清单完整（--full 模式）
+  H. 题库注册表 — qbank 注册表完整性 + 跨批次重复（P0-1 新增）
+  I. 测试套件   — tests/ 回归套件全部通过（P0-2 新增）
 """
-import sys, json, os, subprocess, hashlib, argparse
+import sys, json, os, re, subprocess, hashlib, argparse
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from collections import defaultdict
@@ -36,14 +38,13 @@ BASE = Path(__file__).parent
 REQUIRED_DIRS = [
     '输入素材', '中间产物', '质检报告', '最终产物', '复习资料',
     'GoldenSet', '知识库素材', 'Prompt版本', 'docs',
-    'scripts', 'reports', 'memory',
+    'scripts', 'reports', 'memory', 'question_bank',
 ]
 
 ROOT_ALLOWED = {
     'CONTEXT.md', 'SOUL.md', 'USER.md', 'workflow_state.json',
     '操作流程.txt', '.gitignore',
     'validate_options.py', 'verify_page_numbers.py', 'ingest.py', 'healthcheck.py', 'save.py', 'gate_check.py',
-    'regression_db.json',
 }
 
 ROOT_FORBIDDEN_EXT = {'.exe', '.msi', '.log', '.dll', '.bin'}
@@ -93,9 +94,12 @@ def check_script_importability():
     """检查所有 .py 脚本是否可以至少被 Python 编译"""
     results = []
     py_files = []
-    for d in [BASE] + [BASE / 'GoldenSet'] + [BASE / '知识库素材']:
+    # v1.1 (2026-08-13): 补充 scripts/ 目录（此前漏检 25+ 活跃脚本）
+    for d in [BASE, BASE / 'GoldenSet', BASE / '知识库素材', BASE / 'scripts']:
         if d.exists():
             py_files.extend(d.glob('*.py'))
+    # 排除一次性归档脚本（scripts/archive/ 不在存活性契约内）
+    py_files = [f for f in py_files if 'archive' not in f.parts]
 
     for f in sorted(set(py_files)):
         try:
@@ -184,6 +188,8 @@ def check_state_consistency():
                if k not in ('active_batch', 'system_config') and isinstance(v, dict)}
 
     # C1: 检查中间产物和最终产物目录中的批次是否都在 state 中
+    # v1.1 (2026-08-13): 识别子批次命名 batchXXX-A/B/C（同一主批次的并行分区）
+    import re as _re
     for stage_dir_name in ('中间产物', '最终产物'):
         stage_path = BASE / stage_dir_name
         if not stage_path.exists():
@@ -192,6 +198,9 @@ def check_state_consistency():
             if batch_dir.name == 'archive' or not batch_dir.is_dir():
                 continue
             if batch_dir.name not in batches:
+                parent_id = _re.sub(r'-[A-Z]$', '', batch_dir.name)
+                if parent_id in batches:
+                    continue  # 子批次目录（batchXXX-A/B/C），主批次已登记
                 results.append({
                     'check': 'C1-orphan',
                     'status': 'WARN',
@@ -256,8 +265,9 @@ def check_directory_structure():
             elif item.name.startswith(ROOT_FORBIDDEN_PREFIX):
                 root_violations.append(str(item.name))
             elif item.name not in ROOT_ALLOWED and item.suffix in ('.py', '.json', '.txt', '.log', '.md'):
-                if not item.name.startswith('validate_options_report'):
-                    root_violations.append(str(item.name))
+                # v1.1 (2026-08-13): validate 报告已强制写入 reports/validate/，
+                # 移除根目录 validate_options_report 豁免（防泄漏回归）
+                root_violations.append(str(item.name))
 
     if root_violations:
         results.append({'check': 'D2-root', 'status': 'WARN',
@@ -410,6 +420,69 @@ def check_knowledge_base(full=False):
 
 
 # ──────────────────────────────────────────
+# H. 题库注册表（P0-1 qbank 数据层）
+# ──────────────────────────────────────────
+
+def check_qbank():
+    """检查统一题库注册表: 存在性/完整性/跨批次重复"""
+    results = []
+    qbank_path = BASE / 'question_bank' / 'registry.jsonl'
+    if not qbank_path.exists():
+        return [{'check': 'H1-registry', 'status': 'WARN',
+                 'detail': 'question_bank/registry.jsonl 不存在（运行 python scripts/qbank.py init）'}]
+    try:
+        sys.path.insert(0, str(BASE / 'scripts'))
+        import qbank
+        # 已知合并关系豁免对持久化在 registry_meta.json（`qbank check --ignore-pair X,Y --save` 写入），
+        # 此处不硬编码；check() 内部自动合并持久化对。
+        issues, warns, infos = qbank.check()
+        s = qbank.stats()
+        detail = f'注册表 {s["total"]} 题'
+        if warns:
+            detail += f'，跨批次重复 {len(warns)} 组（需人工裁决）'
+        if issues:
+            results.append({'check': 'H1-registry', 'status': 'FAIL',
+                            'detail': f'{detail}；问题: {"; ".join(issues[:3])}'})
+        else:
+            status = 'WARN' if warns else 'PASS'
+            results.append({'check': 'H1-registry', 'status': status, 'detail': detail})
+    except Exception as e:
+        results.append({'check': 'H1-registry', 'status': 'WARN', 'detail': f'qbank 检查异常: {e}'})
+    return results
+
+
+# ──────────────────────────────────────────
+# I. 测试套件（P0-2 回归防线）
+# ──────────────────────────────────────────
+
+def check_tests():
+    """运行 tests/ 回归套件（scripts/run_tests.py），失败即 FAIL。"""
+    results = []
+    runner = BASE / 'scripts' / 'run_tests.py'
+    if not runner.exists():
+        return [{'check': 'I1-tests', 'status': 'WARN',
+                 'detail': 'scripts/run_tests.py 不存在（P0-2 未部署）'}]
+    try:
+        result = subprocess.run(
+            [sys.executable, str(runner)],
+            capture_output=True, text=True, timeout=120,
+            encoding='utf-8', errors='replace'
+        )
+        # 从输出提取统计
+        m = re.search(r'✅ (\d+) 通过\s+✗ (\d+) 失败\s+⚠️ (\d+) 错误', result.stdout or '')
+        detail = f'测试: {m.group(0)}' if m else '测试: 输出无法解析'
+        if result.returncode == 0:
+            results.append({'check': 'I1-tests', 'status': 'PASS', 'detail': detail})
+        else:
+            results.append({'check': 'I1-tests', 'status': 'FAIL', 'detail': detail})
+    except subprocess.TimeoutExpired:
+        results.append({'check': 'I1-tests', 'status': 'WARN', 'detail': '测试超时 (>120s)'})
+    except Exception as e:
+        results.append({'check': 'I1-tests', 'status': 'WARN', 'detail': f'测试异常: {e}'})
+    return results
+
+
+# ──────────────────────────────────────────
 # 汇总输出
 # ──────────────────────────────────────────
 
@@ -478,6 +551,22 @@ def run_healthcheck(full=False):
     print(f"  [G] 知识库...", end=' ')
     r = check_knowledge_base(full)
     sections['G'] = r
+    fails = sum(1 for x in r if x['status'] == 'FAIL')
+    warns = sum(1 for x in r if x['status'] == 'WARN')
+    print(f'{len(r)-fails-warns}✅ {warns}⚠️ {fails}✗')
+
+    # H (P0-1 题库注册表)
+    print(f"  [H] 题库注册表...", end=' ')
+    r = check_qbank()
+    sections['H'] = r
+    fails = sum(1 for x in r if x['status'] == 'FAIL')
+    warns = sum(1 for x in r if x['status'] == 'WARN')
+    print(f'{len(r)-fails-warns}✅ {warns}⚠️ {fails}✗')
+
+    # I (P0-2 测试套件)
+    print(f"  [I] 测试套件...", end=' ')
+    r = check_tests()
+    sections['I'] = r
     fails = sum(1 for x in r if x['status'] == 'FAIL')
     warns = sum(1 for x in r if x['status'] == 'WARN')
     print(f'{len(r)-fails-warns}✅ {warns}⚠️ {fails}✗')

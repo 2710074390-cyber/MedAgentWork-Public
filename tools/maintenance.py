@@ -60,12 +60,12 @@ PROMPT_MAPPING = {
 }
 
 CROSS_WORKSPACES = [
-    Path.home() / 'Desktop/Web-AI/CONTEXT.md',
-    Path.home() / 'Desktop/web-med/CONTEXT.md',
-    Path.home() / 'Desktop/agent-ppt/CONTEXT.md',
-    Path.home() / 'Desktop/黑曜石/CONTEXT.md',
-    Path.home() / 'Desktop/测试/CONTEXT.md',
-    Path.home() / 'Desktop/MedAgentWork/CONTEXT.md',
+    Path.home() / 'Desktop' / 'Web-AI' / 'CONTEXT.md',
+    Path.home() / 'Desktop' / 'web-med' / 'CONTEXT.md',
+    Path.home() / 'Desktop' / 'agent-ppt' / 'CONTEXT.md',
+    Path.home() / 'Desktop' / '黑曜石' / 'CONTEXT.md',
+    Path.home() / 'Desktop' / '测试' / 'CONTEXT.md',
+    Path.home() / 'Desktop' / 'MedAgentWork' / 'CONTEXT.md',
 ]
 
 HEALTHCHECK_SCRIPT = BASE / 'healthcheck.py'

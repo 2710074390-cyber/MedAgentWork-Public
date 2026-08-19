@@ -55,18 +55,22 @@
 │   └── Agent5_MedReview_Prompt.md # 主复习资料生成
 ├── pipeline/              # 管线声明式配置（单一事实来源）
 │   ├── pipeline.yaml             # 阶段/门禁/SLO 阈值
-│   └── agent_contracts.json      # Agent 输出契约 Schema
+│   ├── agent_contracts.json      # Agent 输出契约 Schema
+│   ├── schemas/                  # 各 Agent 输出契约 Schema（agent2/3/4）
+│   └── skills/                   # DSH 技能（medmaster/medgen/medqc/medfix/medreview/medbatch）
+├── tests/                 # 回归测试套件（58 用例，零外部依赖可跑）
 └── tools/                 # 质量门禁与维护工具
-    ├── gate_check.py            # 质量门禁检查
+    ├── gate_check.py            # 质量门禁检查（流水线门控 + HALT）
+    ├── qbank.py                 # 统一题库注册表 + 交付 MD 导出
+    ├── fact_check.py            # 事实校验（页码反查 + GoldenSet 交叉验证）
+    ├── workflow_state.py        # 工作流状态管理（原子写盘/按批次 HALT）
     ├── validate_options.py      # 选项质量验证（Bloom 分类/R2/R7/字数 SLO）
     ├── healthcheck.py           # 管线健康检查
-    ├── bloom_sampler.py         # Bloom 分层采样监控
-    ├── r2_balancer.py           # 选项长度比均衡
-    ├── frequency_analyzer.py    # 考点频次分析
-    ├── contract_check.py        # Agent 契约合规校验
-    ├── metrics.py / runbook.py / maintenance.py / sync_tools.py
+    ├── run_tests.py             # 测试套件运行器
+    ├── bloom_sampler.py / r2_balancer.py / frequency_analyzer.py
+    ├── contract_check.py / metrics.py / runbook.py / maintenance.py / sync_tools.py
+    ├── kb/                      # RAG 知识库工具（search_kb/embed_*/索引）
     ├── fixes/                   # 历史产物修复脚本（路径已相对化）
-    ├── goldenset/               # GoldenSet 交叉验证工具（数据不分享）
     └── render/                  # 复习资料 HTML 渲染脚本
 ```
 

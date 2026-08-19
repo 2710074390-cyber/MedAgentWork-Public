@@ -22,15 +22,17 @@
   exit 1 = GATE_BLOCKED（必须修复后重试）
   exit 2 = GATE_FAIL（脚本/数据错误）
 """
-import sys, json, os, re, argparse
+import sys, json, re, argparse
 from pathlib import Path
 from datetime import datetime
-from collections import Counter
 
 sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 
 BASE = Path(__file__).parent
-WORKFLOW_STATE = BASE / 'workflow_state.json'
+
+# 正式重构 (2026-08-13): 状态读写/HALT 统一走 workflow_state.py（与本文件同目录）
+sys.path.insert(0, str(BASE))
+import workflow_state as ws
 
 
 # ═══════════════════════════════════════
@@ -162,38 +164,34 @@ def normalize_batch(batch_data):
     return normalized
 
 
-def load_state():
-    """加载工作流状态"""
-    if not WORKFLOW_STATE.exists():
-        return None, f'{WORKFLOW_STATE} 不存在'
-    try:
-        with open(WORKFLOW_STATE, 'r', encoding='utf-8') as f:
-            return json.load(f), None
-    except json.JSONDecodeError as e:
-        return None, f'JSON 解析失败: {e}'
-
-
-def save_state(state):
-    """保存工作流状态（原子写入）"""
-    tmp = WORKFLOW_STATE.with_suffix('.tmp')
-    with open(tmp, 'w', encoding='utf-8') as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, WORKFLOW_STATE)
+# 正式重构 (2026-08-13): load_state/save_state/set_halt/clear_halt/check_halt
+# 已统一迁移至 scripts/workflow_state.py（原子写盘、按批次 HALT、旧数据迁移），
+# 本文件不再保留本地实现，全部经由 ws.* 调用。
 
 
 def find_validate_report(batch_id):
-    """查找指定批次的 validate_options.py 报告"""
+    """查找指定批次的 validate_options.py 报告
+
+    v1.1 (2026-08-13): 按铁律⑤ 优先搜索 reports/validate/，
+    兼容历史根目录残留（2026-08-13 前 validate_options.py 曾写根目录）。
+    """
+    search_dirs = [BASE / 'reports' / 'validate', BASE]
     candidates = [
-        BASE / f'validate_options_report_ALL_questions_{batch_id}.json',
-        BASE / f'validate_options_report_{batch_id}.json',
-        BASE / f'validate_options_report_ALL_questions_FIXED_{batch_id}.json',
+        f'validate_options_report_ALL_questions_{batch_id}.json',
+        f'validate_options_report_{batch_id}.json',
+        f'validate_options_report_ALL_questions_FIXED_{batch_id}.json',
     ]
-    for c in candidates:
-        if c.exists():
-            return c
+    for d in search_dirs:
+        for name in candidates:
+            c = d / name
+            if c.exists():
+                return c
     # 模糊匹配（如后缀 _呼吸 _循环 _血液）
-    for f in sorted(BASE.glob(f'validate_options_report_*{batch_id}*.json')):
-        return f
+    for d in search_dirs:
+        if not d.exists():
+            continue
+        for f in sorted(d.glob(f'validate_options_report_*{batch_id}*.json')):
+            return f
     return None
 
 
@@ -538,6 +536,36 @@ def gate_agent4(batch_id, batch_data):
         except Exception:
             pass
 
+    # 检查最终交付 MD（2026-08-20 起强制）：
+    # 每个 ALL_questions_FIXED*.json 必须有同目录 ALL_questions_FIXED*.md
+    # （由 `python scripts/qbank.py export-md` 生成，用户可读最终交付格式）
+    for jf in json_files:
+        md_expected = jf.with_suffix('.md')
+        if not md_expected.exists():
+            issues.append({
+                'gate_sub': 'GATE-A4-MD',
+                'status': 'BLOCKED',
+                'reason': f'{jf.name} 缺少最终交付 MD 文件 {md_expected.name}。'
+                          f'请运行 python scripts/qbank.py export-md --file {jf.name} --out {md_expected.name}',
+                'rule': '最终交付 MD 格式 (2026-08-20 起强制)',
+            })
+        else:
+            # 抽查 MD 中包含答案标记（✅ 覆盖率 ≥50%，防空转）
+            try:
+                md_text = md_expected.read_text(encoding='utf-8')
+                total_q = sum(1 for line in md_text.splitlines() if line.startswith('### '))
+                check_marks = md_text.count('✅')
+                if total_q > 0 and check_marks < max(1, total_q * 0.5):
+                    issues.append({
+                        'gate_sub': 'GATE-A4-MD',
+                        'status': 'BLOCKED',
+                        'reason': f'{md_expected.name} 答案标记覆盖率过低 '
+                                  f'({check_marks}✅ / {total_q}题)。MD 必须包含 ✅ 答案标记。',
+                        'rule': 'MD答案标记 (save.py MD答案标记规范)',
+                    })
+            except Exception:
+                pass
+
     if issues:
         return {
             'gate': 'GATE-A4',
@@ -549,7 +577,7 @@ def gate_agent4(batch_id, batch_data):
     return {
         'gate': 'GATE-A4',
         'status': 'PASS',
-        'reason': '修复门禁通过 (追溯日志存在, HC-13 source_file_synced OK, JSON纯净)',
+        'reason': '修复门禁通过 (追溯日志存在, HC-13 source_file_synced OK, JSON纯净, MD交付齐全)',
     }
 
 
@@ -640,6 +668,9 @@ def gate_final(batch_id, batch_data):
 # ═══════════════════════════════════════
 
 REGRESSION_DB = BASE / 'regression_db.json'
+if not REGRESSION_DB.exists():
+    # 兼容根目录位置（regression_db.json 为运行期数据，需用户自备）
+    REGRESSION_DB = BASE / 'regression_db.json'
 
 
 def load_regression_db():
@@ -765,80 +796,20 @@ def detect_current_stage(state, batch_id):
 
 
 # ═══════════════════════════════════════
-# Halt 信号管理
+# Halt 信号管理（已迁移至 scripts/workflow_state.py）
 # ═══════════════════════════════════════
-
-def set_halt(state, batch_id, reason, agent):
-    """在 workflow_state.json 中设置 halt 信号"""
-    if 'halt' not in state:
-        state['halt'] = {}
-
-    state['halt'] = {
-        'active': True,
-        'batch_id': batch_id,
-        'reason': reason,
-        'agent': agent,
-        'timestamp': datetime.now().isoformat(),
-    }
-
-    # 也在批次记录中标记
-    if batch_id in state:
-        batch = state[batch_id]
-        if isinstance(batch, dict):
-            if 'gate_results' not in batch:
-                batch['gate_results'] = {}
-            batch['gate_results']['halt'] = {
-                'active': True,
-                'reason': reason,
-                'agent': agent,
-            }
-
-    save_state(state)
-    print(f"\n  🛑 HALT 信号已设置: {reason}")
-
-
-def clear_halt(state, batch_id):
-    """清除 halt 信号"""
-    if 'halt' in state:
-        state['halt'] = {'active': False}
-    if batch_id in state:
-        batch = state[batch_id]
-        if isinstance(batch, dict) and 'gate_results' in batch:
-            batch['gate_results']['halt'] = {'active': False}
-    save_state(state)
-    print(f"  ✅ HALT 信号已清除")
+# set_halt / clear_halt / check_halt 统一由 ws.* 提供（按批次作用域）。
+# 本文件保留打印输出，逻辑见 workflow_state.py。
 
 
 # ═══════════════════════════════════════
 # 主入口
 # ═══════════════════════════════════════
 
-def check_halt(state, batch_id):
-    """检查 halt 信号"""
-    halt = state.get('halt', {})
-    if halt.get('active'):
-        return {
-            'gate': 'HALT',
-            'status': 'BLOCKED',
-            'reason': f"管线已停止: {halt.get('reason', '未知')} (触发Agent: {halt.get('agent', '?')})",
-        }
-    # 也检查批次级别 halt
-    if batch_id in state:
-        batch = state[batch_id]
-        if isinstance(batch, dict):
-            batch_halt = batch.get('gate_results', {}).get('halt', {})
-            if batch_halt.get('active'):
-                return {
-                    'gate': 'HALT',
-                    'status': 'BLOCKED',
-                    'reason': f"批次 {batch_id} 已停止: {batch_halt.get('reason', '未知')}",
-                }
-    return None
-
 
 def run_gate_check(batch_id, stage, run_regression=True):
     """执行门禁检查"""
-    state, err = load_state()
+    state, err = ws.load_state()
     if err:
         print(f"  ✗ 无法加载工作流状态: {err}")
         sys.exit(2)
@@ -861,7 +832,7 @@ def run_gate_check(batch_id, stage, run_regression=True):
         sys.exit(2)
 
     # 先检查 halt 信号
-    halt_result = check_halt(state, batch_id)
+    halt_result = ws.check_halt(state, batch_id)
     if halt_result:
         print(f"\n{'═'*60}")
         print(f"  🛑 管线已停止")
@@ -936,11 +907,17 @@ def run_gate_check(batch_id, stage, run_regression=True):
                 print(f"      ↳ 命令: {rr['command']}")
 
     if not all_pass:
-        set_halt(state, batch_id,
-                 f'{stage} 门禁未通过: ' + '; '.join(r['reason'] for r in results if r['status'] != 'PASS'),
-                 'MedMaster/gate_check.py')
+        if batch_data.get('status') == 'APPROVED':
+            # v1.1 (2026-08-13): 已签收批次的门禁仅作参考，不写 HALT。
+            # 修复前曾因历史门禁误判停掉整条管线（batch024 事件）。
+            print(f"\n  ⚠️ 批次 {batch_id} 已签收（APPROVED），门禁结果仅作参考，不写入 HALT。")
+        else:
+            ws.set_halt(state, batch_id,
+                        f'{stage} 门禁未通过: ' + '; '.join(r['reason'] for r in results if r['status'] != 'PASS'),
+                        'MedMaster/gate_check.py')
+            print(f"\n  🛑 HALT 信号已设置（批次 {batch_id}）")
 
-    save_state(state)
+    ws.save_state(state)
 
     # 汇总
     print(f"\n{'─'*60}")
@@ -983,11 +960,13 @@ def main():
     args = parser.parse_args()
 
     if args.clear_halt:
-        state, err = load_state()
+        state, err = ws.load_state()
         if err:
             print(f"  ✗ {err}")
             sys.exit(2)
-        clear_halt(state, args.batch)
+        ws.clear_halt(state, args.batch)
+        ws.save_state(state)
+        print(f"  ✅ HALT 信号已清除")
         sys.exit(0)
 
     run_gate_check(args.batch, args.stage)

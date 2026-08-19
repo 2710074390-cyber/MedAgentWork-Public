@@ -1,6 +1,6 @@
 # MedAgentWork 待办清单
 
-> 更新：2026-06-27 | 基于：v3.0 技术报告批判分析 + Week 1 四条防线落地 + 四科 v5 测试
+> 更新：2026-08-13 | 基于：v3.0 技术报告批判分析 + Week 1 四条防线落地 + 四科 v5 测试 + 正式重构
 
 ---
 
@@ -15,22 +15,35 @@
 - [x] SOUL.md HC-15/16 规则 + 工具速查表
 - [x] FACT.md 更新 Week 1 成果
 
----
+## 🟢 已完成 (正式重构·2026-08-13)
 
-## 🔴 P0 — 阻塞级（本周）
+- [x] **医患沟通首次试运行**（batch019 已交付 v5.1，2026-07-04；D21-D23 维度待补充记录）
+- [x] **DSH 迁移**：6 个角色 skill（.dsh/skills/）+ 主会话编排 + 文件直传替代剪贴板
+- [x] **P0 修复**：gate_check 报告路径/回归库路径/按批次 HALT/APPROVED 跳过；save.py lost-update；validate 输出至 reports/validate/；ingest 预检 schema 兼容
+- [x] **统一状态模块**：scripts/workflow_state.py（原子读写/血缘/按批次HALT/迁移/校验），ingest/save/gate_check 全部接入；workflow_state.json 迁移至 schema_version=2
+- [x] **契约 schema 落地**：schemas/agent2/3/4_output.schema.json + ingest 摄入时 jsonschema 实际校验（修 pipeline.yaml 死引用）
+- [x] **git 版本控制**：仓库初始化 + 基线/清理/重构三提交（.gitignore 已排除 reports/archive/索引/大文件）
+- [x] **工作区整理**：16 个旧复习资料版本 + 30 份旧 validate 报告归档，输入素材残留清理
+- [x] **文档同步**：USER.md 5-Agent、操作流程.txt DSH 版、CONTEXT.md 协作规则/工具表、healthcheck 补 scripts/ 扫描
+- [x] **P0-1 统一题库数据层**：scripts/qbank.py（统一解析器/注册表/去重/查询/统计），1743 题迁移入库；
+      ingest 自动注册；healthcheck 新增 H 维度；实测发现 1 组跨批次重复待裁决
+- [x] **P0-2 测试套件**：tests/ 四模块 44 用例（validate R1-R13 黄金用例 / workflow_state / qbank / 契约 schema），
+      scripts/run_tests.py 零依赖运行器；healthcheck 新增 I 维度（自动回归）；
+      修 agent4 schema final_gate 类型 bug（实际数据为字符串）
+- [x] **P1-1 事实校验机械化**：scripts/fact_check.py（页码反查 pages + GoldenSet 交叉验证 golden，HC-8 机械化）；
+      jieba 分词 + containment 相似度（实测校准：真题重复 0.61-0.83）；
+      实测 batch022 神经病学 322 题：页码 0 FAIL/38 WARN（P55 集中引用 28 题疑似占位模式）、
+      金标准 1 组疑似重复（脊髓型颈椎病，待人工确认）；
+      qbank 页码规范化修复（P310-P312 区间、指南年份不再误提取）；
+      ignore-pairs 持久化到 registry_meta.json（--save，healthcheck 自动读取）
 
-- [ ] **医患沟通首次试运行** ← 最后一个零实测学科（用户进行中）
-  - 新建 D21-D23 质检维度（可执行性/伦理边界/场景真实性）
-  - 预期触发 3-5 个新事件并驱动新 HC 规则
-  - 17维质检矩阵在此学科预计大面积失效
+## 🟢 已完成 (2026-08-20 · 成本优化 + MD 最终交付)
 
-- [ ] **frequency_analyzer 正则修复**
-  - 疾病名正则与"综合征""病因"等维度词重叠（如"肾病综合征"匹配两次）
-  - 修复：疾病名边界检测 + 维度词去重
-
-- [ ] **补丁溯源 Source-Completeness Gate**
-  - gate_check.py 新增：检测 COMPLETE.json ↔ 分系统源文件 diff
-  - 存在未同步差异 → halt（不再依赖 Agent 4 自觉）
+- [x] **RAG 检索磁盘缓存**：search_kb.py 查询结果 + embed 双层缓存（key 含参数与索引配置签名，索引重建自动失效）；相同查询跨 Agent/批次命中缓存 → 0 API 调用；`--no-cache` 关闭、`--cache-clear` 清理（batch027 402 余额不足事件驱动）
+- [x] **RAG 成本降级模式**：`--no-rerank` 跳过付费 rerank，用 Stage1 余弦分数（成本约减半），余额不足时管线不中断
+- [x] **题库最终交付 MD 格式**：qbank.py 新增 `export-md` 子命令（统一解析器兼容 6 种字段变体，按模块分组，✅ 答案标记/解析/页码/Bloom）；medbatch/medfix/medmaster skill + Prompt 同步强制「GATE-A4 后必须导出 ALL_questions_FIXED.md」
+- [x] **注册表归档感知**：qbank check 支持 archive/ 路径回退（学期切换归档后 14 条注册失效问题修复）；新增 `rehome` 命令持久化重写失效路径
+- [x] **测试扩充**：tests/test_export_md.py 5 用例（export-md 格式/判断题原文答案/归档感知/rehome 读写），全量 46→51 用例通过
 
 ---
 

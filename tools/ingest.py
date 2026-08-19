@@ -20,6 +20,10 @@ sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 BASE = Path(__file__).parent
 STATE_FILE = BASE / "workflow_state.json"
 
+# 正式重构 (2026-08-13): 状态读写/血缘统一走 workflow_state.py（与本文件同目录）
+sys.path.insert(0, str(BASE))
+import workflow_state as ws
+
 STAGE_DIRS = {
     'agent2': '中间产物',
     'agent3': '质检报告',
@@ -54,18 +58,27 @@ def validate_json_structure(filepath):
         return [f'JSON 解析失败: {e}']
 
     if isinstance(data, list):
-        # 题库 JSON（数组格式）
+        # 题库 JSON（数组格式）— v1.1 (2026-08-13): 兼容两代字段命名
+        # 旧: id/question/type/answer | 新: question_id/stem/question_type/answer_key
         for i, item in enumerate(data):
             if not isinstance(item, dict):
                 issues.append(f'[{i}] 非对象类型')
                 continue
-            for field in ['id', 'type', 'question', 'options', 'answer']:
-                if field not in item or item[field] is None:
-                    issues.append(f'[{i}] 缺少必填字段: {field}')
-                elif isinstance(item[field], str) and item[field].strip() == '':
-                    issues.append(f'[{i}] 必填字段为空: {field}')
-            if 'options' in item and isinstance(item['options'], list) and len(item['options']) == 0:
-                issues.append(f'[{i}] 选项组为空')
+            qid = item.get('id') or item.get('question_id')
+            stem = item.get('question') or item.get('stem') or item.get('question_text') or item.get('题干')
+            qtype = item.get('type') or item.get('question_type')
+            opts = item.get('options')
+            ans = item.get('answer') or item.get('answer_key') or item.get('correct_answer')
+            if not qid:
+                issues.append(f'[{i}] 缺少必填字段: id/question_id')
+            if not stem or (isinstance(stem, str) and stem.strip() == ''):
+                issues.append(f'[{i}] 缺少必填字段: question/stem')
+            if not qtype:
+                issues.append(f'[{i}] 缺少必填字段: type/question_type')
+            if opts is None or (isinstance(opts, list) and len(opts) == 0):
+                issues.append(f'[{i}] 缺少必填字段: options 或选项组为空')
+            if not ans:
+                issues.append(f'[{i}] 缺少必填字段: answer/answer_key')
     elif isinstance(data, dict):
         # 质检报告 JSON
         if 'report_metadata' not in data:
@@ -78,37 +91,59 @@ def validate_json_structure(filepath):
     return issues
 
 
+# ──────────────────────────────────────────
+# 契约 schema 校验（正式重构 2026-08-13）
+# schemas/agent2_output.schema.json 等为管线契约单一事实来源，
+# 摄入时用 jsonschema 实际校验（修复 pipeline.yaml 死引用问题）。
+# ──────────────────────────────────────────
+
+SCHEMA_MAP = {
+    'agent2': 'agent2_output.schema.json',
+    'agent3': 'agent3_output.schema.json',
+    'agent4': 'agent4_output.schema.json',
+}
+
+
+def validate_schema(filepath, stage):
+    """契约 schema 校验（jsonschema）。schema 缺失/解析失败/库不可用时静默跳过。"""
+    schema_file = BASE / 'pipeline' / 'schemas' / SCHEMA_MAP.get(stage, '')
+    if not schema_file.exists():
+        return []
+    try:
+        import jsonschema
+        with open(schema_file, 'r', encoding='utf-8') as f:
+            schema = json.load(f)
+        with open(filepath, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        validator = jsonschema.Draft7Validator(schema)
+        errors = sorted(validator.iter_errors(data), key=lambda e: list(e.path))
+        return [f'schema[{stage}]: {"/".join(map(str, e.path)) or "$"}: {e.message}' for e in errors[:20]]
+    except ImportError:
+        return []
+    except Exception:
+        return []
+
+
 def load_state():
-    """加载 workflow_state.json"""
-    if STATE_FILE.exists():
-        with open(STATE_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    return {}
+    """加载 workflow_state.json（统一模块，含旧数据迁移）"""
+    state, err = ws.load_state()
+    if err:
+        print(f"  ⚠️ {err}，按空状态继续")
+        return {}
+    return state
 
 
 def save_state(state):
-    """保存 workflow_state.json"""
-    with open(STATE_FILE, 'w', encoding='utf-8') as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
+    """保存 workflow_state.json（统一模块，原子写盘）"""
+    ws.save_state(state)
     print(f"  📄 workflow_state.json 已更新")
 
 
 def add_lineage(state, batch_id, stage, filepath, file_md5):
-    """添加血缘记录到批次"""
+    """添加血缘记录（统一模块）；保留 Prompt 版本内容推断"""
     if batch_id not in state:
         print(f"  ⚠️ 批次 {batch_id} 在 workflow_state.json 中不存在，创建新条目")
-        state[batch_id] = {
-            'batch_id': batch_id,
-            'status': 'IN_PROGRESS',
-            'created': datetime.now().isoformat(),
-            'workflow': 'Agent 2(MedGen)→Agent 3(MedQC)→Agent 4(MedFix)→Agent 5(MedReview)',
-        }
 
-    batch = state[batch_id]
-    if 'lineage' not in batch:
-        batch['lineage'] = []
-
-    # 确定 agent_model（尝试从文件名或内容推断，无法确定则写 unknown）
     model = 'unknown'
     prompt_version = 'unknown'
 
@@ -122,30 +157,8 @@ def add_lineage(state, batch_id, stage, filepath, file_md5):
     except Exception:
         pass
 
-    entry = {
-        'stage': f'{stage}_DONE',
-        'input_file': str(filepath),
-        'input_md5': file_md5,
-        'agent_model': model,
-        'prompt_version': prompt_version,
-        'timestamp': datetime.now().isoformat(),
-    }
-    batch['lineage'].append(entry)
-
-    # 更新 steps 状态
-    if 'steps' not in batch:
-        batch['steps'] = {}
-    stage_key = stage.upper()
-    batch['steps'][stage_key] = {
-        'status': 'COMPLETED',
-        'output': str(filepath.name),
-        'md5': file_md5,
-    }
-
-    # 更新批次状态
-    batch['status'] = f'{stage_key}_DONE'
-
-    return batch
+    return ws.add_lineage(state, batch_id, stage, filepath, file_md5,
+                          model=model, prompt_version=prompt_version)
 
 
 def run_precheck(filepath, batch_id):
@@ -216,6 +229,13 @@ def main():
     if source.suffix == '.json':
         print(f"\n  🩺 JSON 结构预检...")
         issues = validate_json_structure(source)
+        # 2a. 契约 schema 校验（正式重构: schemas/*.schema.json 实时生效）
+        schema_issues = validate_schema(source, args.stage)
+        if schema_issues:
+            print(f"  ⚠️ 契约 schema 发现 {len(schema_issues)} 个问题:")
+            for issue in schema_issues[:10]:
+                print(f"    - {issue}")
+            issues += schema_issues
         if issues:
             print(f"  ✗ 发现 {len(issues)} 个结构问题:")
             for issue in issues[:10]:
@@ -270,6 +290,22 @@ def main():
         print(f"\n  📋 文件已复制到: {dest}")
     else:
         print(f"\n  📋 目标路径（未移动）: {dest}")
+
+    # 7b. 统一题库注册（P0-1 qbank 数据层：agent2/agent4 的 JSON 题库自动入库）
+    if not args.no_move and ext == '.json' and args.stage in ('agent2', 'agent4'):
+        try:
+            import qbank
+            stage_tag = 'final' if args.stage == 'agent4' else 'intermediate'
+            n, dups = qbank.register_file(dest, args.batch, stage=stage_tag)
+            qbank.update_meta()
+            if n:
+                print(f"  📚 题库注册: {n} 题 → question_bank/registry.jsonl")
+            if dups:
+                print(f"  ⚠️ 与注册表重复 {len(dups)} 条（去重仅报告，不自动删除）:")
+                for d in dups[:3]:
+                    print(f"     「{d['stem']}」 ← {d.get('dup_with_file')}")
+        except Exception as e:
+            print(f"  ⚠️ 题库注册跳过: {e}")
 
     # 7. 更新 workflow_state.json
     state = load_state()
