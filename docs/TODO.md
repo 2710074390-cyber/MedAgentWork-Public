@@ -1,6 +1,17 @@
 # MedAgentWork 待办清单
 
-> 更新：2026-08-20（代码质量全面审查）| 基于：v3.0 技术报告批判分析 + Week 1 四条防线落地 + 四科 v5 测试 + 正式重构 + 五域代码审查
+> 更新：2026-08-21（HC-18 考研真题配额落地 + 公开仓库同步）| 基于：v3.0 技术报告批判分析 + Week 1 四条防线落地 + 四科 v5 测试 + 正式重构 + 五域代码审查
+
+---
+
+## 🟢 已完成 (2026-08-21 · HC-18 考研真题配额 + 公开仓库同步)
+
+- [x] **HC-18 考研真题配额规则**：题库生成规则新增「每批约 1/5（目标 20%，合格带 15%–25%）为考研原题」——MedGen prompt（HC-18 完整规则 + kaoyan_origin 标注 + 解析来源句 + 批量统计行）、MedMaster prompt（HC-18 配额编排：批次启动 pick 检索真题候选 → Agent 2 指令注入配额 → 终审 check 校验占比）、MedQC prompt（新增 D21 考研原题一致性：kaoyan_origin 题 100% 比对 GoldenSet 源）、MedFix prompt（HC-4b 真题答案保护：答案冲突升级告警不静默改）；SOUL.md 共享硬约束表 + 工具速查、CONTEXT.md 真题素材源/配额流程/工具表、medgen/medmaster/medqc/medbatch 四技能同步
+- [x] **真题素材确认**：GoldenSet 解析产物 9,616 条（上册 5,168 题 1994–2024 含题干/选项 + 下册 4,448 条贺银成精析含答案/解析，gs_id 配对 4,003 条完整可用）——确认「素材中有考研题内容」成立
+- [x] **scripts/kaoyan_picker.py 落地**：pick（按学科/关键词检索真题候选，上册题干+下册答案配对，写中间产物 kaoyan_candidates.json）+ check（终审占比校验，<15% exit 1）；实测 内科学-心衰 关键词 429 命中/5 条输出
+- [x] **契约同步**：schemas/agent2_output.schema.json 增加 kaoyan_origin（optional，additionalProperties 兼容）
+- [x] **文档**：docs/MedAgentWork_项目介绍_v4.0.md（最新版项目介绍，作为仓库入口文档）；使用指南 v2.0 顶部加交叉引用；工程思路 v1.0 移入 archive/docs/（铁律⑦ ≤5 活跃文档）
+- [x] **公开仓库同步**：MedAgentWork-Public main 更新 prompts（5 个当前版提示词，含 HC-18/D21/HC-4b）/ pipeline skills（6 个）/ pipeline schemas（agent2 + kaoyan_origin）/ tools（kaoyan_picker.py + 差异脚本）/ docs（项目介绍 v4.0 + 使用指南）/ README（最新数据与 HC-18 说明）
 
 ---
 

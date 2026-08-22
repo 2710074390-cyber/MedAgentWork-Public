@@ -39,6 +39,7 @@ GATE-A2   python validate_options.py --batch {batchID}          # FAIL==0 才放
 GATE-A3   python gate_check.py --batch {batchID} --stage agent3_done
 GATE-A4   python gate_check.py --batch {batchID} --stage agent4_done
 MD导出    python scripts/qbank.py export-md --file 最终产物/{batchID}/ALL_questions_FIXED.json   # 最终交付 MD（2026-08-20 起强制）
+真题配额  python scripts/kaoyan_picker.py check --file 最终产物/{batchID}/ALL_questions_FIXED.json   # HC-18 考研真题占比（2026-08-21 起，终审前执行）
 终审      python gate_check.py --batch {batchID} --stage final
 ```
 
@@ -46,6 +47,7 @@ MD导出    python scripts/qbank.py export-md --file 最终产物/{batchID}/ALL_
 - `python gate_check.py --batch {batchID} --clear-halt` 清除该批次 HALT（修复后使用）
 - validate 报告输出在 `reports/validate/`，gate 报告在 `reports/gate/`
 - **MD 导出是最终交付格式**：GATE-A4 通过后必须运行 export-md 生成 `ALL_questions_FIXED.md`（JSON 为机器可读源，MD 为用户可读交付），与 JSON 同目录交付
+- **考研真题配额（HC-18）**：批次启动前运行 `kaoyan_picker.py pick`（检索该章节真题候选，注入 Agent 2 调用指令）；终审前运行 `kaoyan_picker.py check`（占比 ≥15% 通过；<15% 时核对候选，确无真题覆盖则标注"无真题覆盖"后放行）
 
 ### 事实校验（P1-1 · 2026-08-13，GATE-A2 前执行）
 

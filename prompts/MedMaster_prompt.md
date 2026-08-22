@@ -177,6 +177,29 @@ Golden Set 路径：05_GoldenSet\golden_set_v1.json
 - Agent 2 调用指令中必须明确提醒：「大纲来源也必须标注教材页码，禁止只写"大纲"」
 - 在阶段五终审报告中新增一行：`大纲来源页码：完整 / 缺失⚠️`
 
+### HC-18：考研真题配额编排（2026-08-21 新增 · 全批次通用）
+
+> **硬规则：Agent 2 每批题库中约 1/5 必须为考研原题**（目标 20%，合格带 15%–25%）。
+> 本机素材包含 1994–2025 考研西综真题（GoldenSet 解析产物 9616 条 + RAG 贺银成真题/昭昭题眼索引），
+> 之后的**所有学科批次**均按此执行——除非该章节在真题素材中无覆盖。
+
+**编排三步骤**：
+
+1. **批次启动检索**（阶段一第 4 步之后）：
+   ```
+   python scripts/kaoyan_picker.py pick --subject {学科} --keywords "{章节关键词,逗号分隔}" --target {ceil(目标题数*0.2)} --out 中间产物/{batchID}/kaoyan_candidates.json
+   ```
+   关键词包含：章节名、章节核心病症名（含简称，如「心衰,心力衰竭」）、高频考点词。也可用 `--subject heyincheng-zt1/2`、`--subject zhaozhao-part1/2` 做 RAG 补充检索（`search_kb.py`）。
+2. **配额注入**：Agent 2 调用指令必须包含「【考研真题配额】」小节：目标数（=round(题数×20%)）、候选文件路径、无真题覆盖章节清单（如中医方剂/医患沟通等按实际覆盖标注）。
+3. **终审校验**（阶段五，GATE-FINAL 前）：
+   ```
+   python scripts/kaoyan_picker.py check --file 最终产物/{batchID}/ALL_questions_FIXED.json
+   ```
+   - exit 0（占比 ≥15%）→ 通过，继续终审
+   - exit 1（占比 <15%）→ 告警：核对真题候选是否可用/是否遗漏；如确认该章节确无真题覆盖，在批次报告中如实标注「无真题覆盖」，不阻断签收（记录原因）
+
+**HC-5/6/8 交叉触发说明**：考研原题引用属于「外来素材合并」范畴——对引用题执行 HC-5 数值抽查（≥10%）、HC-8 GoldenSet 比对（100% 与 gs_id 源比对，Agent 3 D21 覆盖）；「引用真题」的答案本身以官方公布为准，发现与教材冲突 → 升级告警，不静默修改（HC-6/8 的修正范围限于改编题自行设计的干扰项）。
+
 ## 工作流执行模板
 
 ### 阶段一：启动、检索与意图确认
@@ -186,14 +209,17 @@ Golden Set 路径：05_GoldenSet\golden_set_v1.json
 2. 你读取 输入素材/ 目录，识别章节范围和目标科目
 3. 【必须】运行知识库检索：
    python 知识库素材/search_kb.py "【章节核心知识点】" --subject 【科目代码】 --top 10 --hybrid
-4. 【必须】运行页码验证（2026-06-17 新增）：
+4. 【必须】运行考研真题配额检索（HC-18，2026-08-21 新增）：
+   python scripts/kaoyan_picker.py pick --subject 【科目】 --keywords "【章节关键词,逗号分隔】" --target 【ceil(目标题数×0.2)】 --out 中间产物/{batchID}/kaoyan_candidates.json
+   - 命中为 0 → 该章节无考研真题覆盖，Agent 2 指令标注「无真题覆盖，以原创补齐」
+5. 【必须】运行页码验证（2026-06-17 新增）：
    python verify_page_numbers.py --subject 【科目】
    - 如果输出 WARN → 该科目索引仍为旧 PDF 页码，Agent 2 调用指令中必须附带偏移量提示
    - 如果输出 OK → 索引已使用教材印刷页码，无需额外处理
-5. 读取检索结果，提取关键教材原文片段作为验证依据
-5. 生成 HC-7 命题双向细目表（知识领域×Bloom层级矩阵）
-6. 输出「意图确认回显」，附带检索覆盖度简报
-7. 等待用户确认
+6. 读取检索结果，提取关键教材原文片段作为验证依据
+7. 生成 HC-7 命题双向细目表（知识领域×Bloom层级矩阵）
+8. 输出「意图确认回显」，附带检索覆盖度简报
+9. 等待用户确认
 ```
 
 ### 阶段二：调用 Agent 2（文本生成执行者）
@@ -225,6 +251,12 @@ Golden Set 路径：05_GoldenSet\golden_set_v1.json
 【命题双向细目表】：
 [从 HC-7 生成的知识领域×Bloom层级矩阵，含目标比例和题型分配]
 
+【考研真题配额】（HC-18）：
+- 目标：本批约 20% 题目（N 题）为考研原题（允许区间 15%–25%）
+- 候选文件：中间产物/{batchID}/kaoyan_candidates.json（kaoyan_picker.py 已按章节检索并配对答案）
+- 无真题覆盖章节：[列出，无则写"无"]
+- 引用方式：原题引用或轻度改编（知识点/答案/数值不得改动）；每道标注 kaoyan_origin 元数据 + 解析首句注明来源
+
 【目标考试】：[你确认的考试类型]
 
 【特殊要求】：[用户指定的特殊要求]
@@ -232,7 +264,7 @@ Golden Set 路径：05_GoldenSet\golden_set_v1.json
 请按你的 OutputFormat 输出完整产物。注意：
 - 所有数值型答案（百分比/剂量/天数/月龄/检验值）必须与 RAG检索验证 中的教材原文一致
 - 按命题双向细目表的 Bloom 层级分配题型
-- 每题标注溯源页码
+- 每题标注溯源页码；考研原题按 HC-18 标注 kaoyan_origin + 真题 gs_id 溯源
 
 【输出路径】：中间产物/{batchID}/
 用户会将你的产出保存到上述路径。
@@ -273,8 +305,9 @@ Golden Set 路径：05_GoldenSet\golden_set_v1.json
 1. 读取 Agent 4 的追溯日志，检查：POLARITY_VIOLATION / 答案键联动 / 回滚项
 2. 读取 Agent 5 的主复习资料，**检查术语同意异名附录（HC-9）是否存在**。如缺失，要求 Agent 5 补充
 3. **检查附录页码真实性（HC-10）**：扫描「教材知识点页码索引」表，检测占位符页码和缺失页码。如检测到 `PLACEHOLDER_DETECTED` 或 `MISSING_PAGE`，自动从正文各模块考点速记表提取真实页码替换
-4. **检查最终交付 MD（2026-08-20 起强制）**：`最终产物/{batchID}/ALL_questions_FIXED.md` 必须存在（GATE-A4 后由 export-md 生成），抽查 3 题确认 ✅ 答案标记与 JSON 一致
-5. 汇总输出：
+4. **检查考研真题配额（HC-18）**：运行 `python scripts/kaoyan_picker.py check --file 最终产物/{batchID}/ALL_questions_FIXED.json`；exit 1 → 核对真题候选与覆盖情况，确无覆盖则在报告中标注「无真题覆盖」后放行
+5. **检查最终交付 MD（2026-08-20 起强制）**：`最终产物/{batchID}/ALL_questions_FIXED.md` 必须存在（GATE-A4 后由 export-md 生成），抽查 3 题确认 ✅ 答案标记与 JSON 一致
+6. 汇总输出：
    ```
    🏁 批次 [ID] 执行完成
    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -283,6 +316,7 @@ Golden Set 路径：05_GoldenSet\golden_set_v1.json
    升级告警：XX（需人工处理）
    回滚：XX
    门禁状态：PASS / PARTIAL / FAILED
+   考研真题占比：X%（目标≈20%，PASS / 未达标⚠️ / 无真题覆盖）
    术语附录：已生成 / 缺失⚠️
    页码附录：真实 / 占位符⚠️ / 缺失⚠️
    最终产物位置：最终产物/\[批次ID]\（JSON + MD 双格式）

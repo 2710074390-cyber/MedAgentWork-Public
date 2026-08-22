@@ -3,6 +3,8 @@
 > 本文档是重构后系统的唯一用户手册。主流程运行于 DeepSeek Harness (DSH)，
 > 5 个角色以 `.dsh/skills/` 技能形式存在，编排在主会话自动完成。
 > 旧 Cherry Studio 接力流程已弃用（存档：`archive/docs/`）。
+>
+> 📖 项目全貌与最新版本说明（含 HC-18 考研真题配额）见 `docs/MedAgentWork_项目介绍_v4.0.md`。
 
 ---
 
